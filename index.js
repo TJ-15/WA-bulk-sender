@@ -4,6 +4,7 @@ const QRCode = require("qrcode");
 const pino = require("pino");
 const path = require("path");
 const cors = require("cors");
+const fs = require("fs");
 
 const {
   default: makeWASocket,
@@ -12,6 +13,7 @@ const {
 } = require("@whiskeysockets/baileys");
 
 const app = express();
+
 app.use(cors());
 app.use(express.json());
 app.use(express.static(path.join(__dirname, "public")));
@@ -19,12 +21,22 @@ app.use(express.static(path.join(__dirname, "public")));
 app.get("/", (req, res) => {
   res.sendFile(path.join(__dirname, "public", "index.html"));
 });
+
 let sock;
 let isConnected = false;
 let qrCodeDataUrl = null;
 
 let SHEET_ID = "1-BQAJSSu4sdwsFewDYxwD_-UzCIigB99C0ARq9SZgdA";
 let SHEET_GID = "0";
+
+function deleteAuthFolder() {
+  const authPath = path.join(__dirname, "auth");
+
+  if (fs.existsSync(authPath)) {
+    fs.rmSync(authPath, { recursive: true, force: true });
+    console.log("🗑️ Auth folder deleted");
+  }
+}
 
 function getSheetCsvUrl() {
   return `https://docs.google.com/spreadsheets/d/${SHEET_ID}/export?format=csv&gid=${SHEET_GID}`;
@@ -119,7 +131,6 @@ async function startWhatsApp() {
   sock.ev.on("connection.update", async (update) => {
     const { connection, qr, lastDisconnect } = update;
 
-    // QR only set once, so frontend will not keep changing fast
     if (qr && !qrCodeDataUrl) {
       try {
         qrCodeDataUrl = await QRCode.toDataURL(qr, {
@@ -142,16 +153,23 @@ async function startWhatsApp() {
       isConnected = false;
       qrCodeDataUrl = null;
 
-      const shouldReconnect =
-        lastDisconnect?.error?.output?.statusCode !== DisconnectReason.loggedOut;
+      const statusCode = lastDisconnect?.error?.output?.statusCode;
 
-      console.log("❌ Connection Closed");
+      console.log("❌ Connection Closed:", statusCode);
 
-      if (shouldReconnect) {
+      if (statusCode === DisconnectReason.loggedOut) {
+        deleteAuthFolder();
+
         setTimeout(() => {
           startWhatsApp();
-        }, 5000);
+        }, 3000);
+
+        return;
       }
+
+      setTimeout(() => {
+        startWhatsApp();
+      }, 5000);
     }
   });
 }
@@ -174,6 +192,21 @@ app.get("/qr", (req, res) => {
     connected: false,
     qr: qrCodeDataUrl,
   });
+});
+
+app.get("/show-qr", (req, res) => {
+  if (isConnected) {
+    return res.send("<h2>WhatsApp Connected ✅</h2>");
+  }
+
+  if (!qrCodeDataUrl) {
+    return res.send("<h2>QR not ready. Refresh after 5 seconds.</h2>");
+  }
+
+  res.send(`
+    <h2>Scan WhatsApp QR</h2>
+    <img src="${qrCodeDataUrl}" width="300" />
+  `);
 });
 
 app.post("/set-sheet", (req, res) => {
@@ -318,6 +351,8 @@ app.post("/send-from-google-sheet", async (req, res) => {
 
 startWhatsApp();
 
-app.listen(3000, () => {
-  console.log("🚀 Server running on http://localhost:3000");
+const PORT = process.env.PORT || 3000;
+
+app.listen(PORT, () => {
+  console.log(`🚀 Server running on port ${PORT}`);
 });
